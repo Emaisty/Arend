@@ -79,6 +79,13 @@ public class ModuleDeserialization {
               break;
             }
           }
+        } else if (parent != null && parent.getTypechecked() instanceof DataDefinition parentDef) {
+          for (Constructor constructor : parentDef.getConstructors()) {
+            if (constructor.getName().equals(callTargetTree.getName())) {
+              referable1 = constructor.getReferable();
+              break;
+            }
+          }
         }
       }
       referable = referable1 instanceof TCDefReferable ? (TCDefReferable) referable1 : null;
