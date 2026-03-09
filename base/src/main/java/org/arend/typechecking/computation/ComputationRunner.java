@@ -2,6 +2,10 @@ package org.arend.typechecking.computation;
 
 import org.arend.util.ComputationInterruptedException;
 
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -9,6 +13,12 @@ import java.util.function.Supplier;
 public class ComputationRunner<T> {
   private static CancellationIndicator CANCELLATION_INDICATOR = UnstoppableCancellationIndicator.INSTANCE;
   private static final Lock lock = new ReentrantLock();
+  private static final ScheduledExecutorService WATCHDOG = Executors.newSingleThreadScheduledExecutor(r -> {
+    Thread t = new Thread(r, "arend-computation-watchdog");
+    t.setDaemon(true);
+    return t;
+  });
+  public static final long COMPUTATION_TIMEOUT_SECONDS = 30;
 
   public static void checkCanceled() throws ComputationInterruptedException {
     CANCELLATION_INDICATOR.checkCanceled();
@@ -44,11 +54,14 @@ public class ComputationRunner<T> {
 
   public T run(CancellationIndicator cancellationIndicator, Supplier<T> runnable) {
     lock(cancellationIndicator);
+    final CancellationIndicator activeIndicator = CANCELLATION_INDICATOR;
+    ScheduledFuture<?> watchdog = WATCHDOG.schedule((Runnable) activeIndicator::cancel, COMPUTATION_TIMEOUT_SECONDS, TimeUnit.SECONDS);
     try {
       return runnable.get();
     } catch (ComputationInterruptedException ignored) {
       return computationInterrupted();
     } finally {
+      watchdog.cancel(false);
       unlock();
     }
   }

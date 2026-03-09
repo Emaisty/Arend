@@ -10,6 +10,7 @@ import com.intellij.platform.ide.progress.withBackgroundProgress
 import com.intellij.platform.util.progress.reportRawProgress
 import com.intellij.platform.util.progress.reportSequentialProgress
 import kotlinx.coroutines.*
+import java.util.concurrent.Executors
 import org.arend.error.DummyErrorReporter
 import org.arend.ext.module.LongName
 import org.arend.ext.module.ModuleLocation
@@ -25,6 +26,9 @@ import org.arend.typechecking.visitor.ArendCheckerFactory
 
 @Service(Service.Level.PROJECT)
 class RunnerService(private val project: Project, private val coroutineScope: CoroutineScope) {
+    private val arendDispatcher = Executors.newFixedThreadPool(4) { r ->
+        Thread(r, "arend-typechecker").also { it.isDaemon = true }
+    }.asCoroutineDispatcher()
     private fun runChecker(library: String?, isTest: Boolean, module: ModuleLocation?, definition: LongName?, onlyResolve: Boolean, checkerFactory: ArendCheckerFactory?, renamed: Map<TCDefReferable, TCDefReferable>?, bgAction: (() -> Unit)?, edtAction: (() -> Unit)?) =
         coroutineScope.launch {
             val message = module?.toString() ?: (library ?: "project")
@@ -50,10 +54,12 @@ class RunnerService(private val project: Project, private val coroutineScope: Co
                             val location = if (module == null) ref.location else null
                             (if (location == null) "" else "$location ") + ref.refLongName.toString()
                         }
-                        val result = if (checkerFactory == null) {
-                            checker.typecheck(if (definition == null || module == null) null else listOf(FullName(module, definition)), NotificationErrorReporter(project), CoroutineCancellationIndicator(this), indicator)
-                        } else {
-                            checker.typecheck(FullName(module, definition!!), checkerFactory, renamed, DummyErrorReporter.INSTANCE, CoroutineCancellationIndicator(this), indicator)
+                        val result = withContext(arendDispatcher) {
+                            if (checkerFactory == null) {
+                                checker.typecheck(if (definition == null || module == null) null else listOf(FullName(module, definition)), NotificationErrorReporter(project), CoroutineCancellationIndicator(this), indicator)
+                            } else {
+                                checker.typecheck(FullName(module, definition!!), checkerFactory, renamed, DummyErrorReporter.INSTANCE, CoroutineCancellationIndicator(this), indicator)
+                            }
                         }
                         if (bgAction != null) bgAction()
                         result
