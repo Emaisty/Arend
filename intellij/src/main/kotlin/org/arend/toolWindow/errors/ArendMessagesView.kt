@@ -9,12 +9,19 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.runInEdt
 import com.intellij.openapi.application.runReadAction
 import com.intellij.openapi.components.service
+import com.intellij.openapi.editor.EditorFactory
+import com.intellij.openapi.editor.event.CaretEvent
+import com.intellij.openapi.editor.event.CaretListener
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent
+import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ProjectManagerListener
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ex.ToolWindowManagerListener
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElement
 import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.ScrollPaneFactory
@@ -27,27 +34,32 @@ import org.arend.ArendIcons
 import org.arend.ext.error.GeneralError
 import org.arend.ext.error.LocalError
 import org.arend.ext.error.MissingClausesError
+import org.arend.ext.module.ModuleLocation
 import org.arend.ext.reference.ArendRef
 import org.arend.ext.reference.DataContainer
-import org.arend.ext.module.ModuleLocation
+import org.arend.psi.ArendFile
+import org.arend.psi.ancestor
+import org.arend.psi.doc.ArendDocComment
 import org.arend.psi.ext.ArendGoal
 import org.arend.psi.ext.PsiLocatedReferable
 import org.arend.server.ArendServerService
 import org.arend.settings.ArendProjectSettings
 import org.arend.settings.ArendSettings
-import org.arend.toolWindow.errors.tree.*
+import org.arend.toolWindow.errors.tree.ArendErrorTree
+import org.arend.toolWindow.errors.tree.ArendErrorTreeAutoScrollFromSource
+import org.arend.toolWindow.errors.tree.ArendErrorTreeAutoScrollToSource
+import org.arend.toolWindow.errors.tree.ArendErrorTreeCellRenderer
+import org.arend.toolWindow.errors.tree.ArendErrorTreeElement
 import org.arend.util.ArendBundle
+import org.jetbrains.annotations.Nls
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.event.TreeSelectionEvent
 import javax.swing.event.TreeSelectionListener
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
-import kotlin.collections.HashMap
-import kotlin.collections.LinkedHashMap
-import kotlin.collections.LinkedHashSet
 
-class ArendMessagesView(private val project: Project, toolWindow: ToolWindow) : TreeSelectionListener, ProjectManagerListener {
+class ArendMessagesView(private val project: Project, private val toolWindow: ToolWindow) : TreeSelectionListener, ProjectManagerListener {
     private val root = DefaultMutableTreeNode("Errors")
     private val treeModel = DefaultTreeModel(root)
     val tree = ArendErrorTree(treeModel)
@@ -69,8 +81,16 @@ class ArendMessagesView(private val project: Project, toolWindow: ToolWindow) : 
 
     private var errorEditor: ArendMessagesViewEditor? = null
     private val errorEmptyPanel =
-        JBPanelWithEmptyText().withEmptyText(ArendBundle.message("arend.messages.view.empty.error.panel.text"))
+        JBPanelWithEmptyText().withEmptyText(ArendBundle.message("arend.messages.view.empty.error.info.panel.text"))
     private val errorsPanel = JBUI.Panels.simplePanel(errorEmptyPanel)
+    private val errorToolTipText = ArendBundle.message("arend.messages.view.error.tooltip")
+
+    private var infoEditor: ArendInfoViewEditor? = null
+    private val infoEmptyPanel =
+        JBPanelWithEmptyText().withEmptyText(ArendBundle.message("arend.messages.view.empty.error.info.panel.text"))
+    private val infoPanel = JBUI.Panels.simplePanel(infoEmptyPanel)
+    private val infoToolTipText = ArendBundle.message("arend.messages.view.info.tooltip")
+    private var isCursorOnDocComment = false
 
     init {
         ProjectManager.getInstance().addProjectManagerListener(project, this)
@@ -113,25 +133,62 @@ class ArendMessagesView(private val project: Project, toolWindow: ToolWindow) : 
             firstComponent = SingleHeightTabs(project, toolWindow.disposable).apply {
                 addTab(goalsTabInfo)
             }
-            secondComponent = SingleHeightTabs(project, toolWindow.disposable).apply {
-                addTab(TabInfo(errorsPanel).apply {
-                    setText(ArendBundle.message("arend.messages.view.error.title"))
-                    setTooltipText(ArendBundle.message("arend.messages.view.error.tooltip"))
-                })
-            }
-            val isShowErrorsPanel = project.service<ArendMessagesService>().isShowErrorsPanel
-            secondComponent.isVisible = isShowErrorsPanel.get()
-            isShowErrorsPanel.afterSet {
+            setErrorPanel()
+            val isShowErrorsOrInfoPanel = project.service<ArendMessagesService>().isShowErrorsOrInfoPanel
+            secondComponent.isVisible = isShowErrorsOrInfoPanel.get()
+            isShowErrorsOrInfoPanel.afterSet {
                 secondComponent.isVisible = true
                 updateEditors()
             }
-            isShowErrorsPanel.afterReset { secondComponent.isVisible = false }
+            isShowErrorsOrInfoPanel.afterReset { secondComponent.isVisible = false }
         }
 
         project.service<ArendMessagesService>().isShowImplicitGoals.afterChange { updateEditors() }
         project.service<ArendMessagesService>().isShowGoalsInErrorsPanel.afterChange { updateEditors() }
 
+        EditorFactory.getInstance().eventMulticaster.addCaretListener(object : CaretListener {
+            override fun caretPositionChanged(event: CaretEvent) {
+                if (event.editor.project != project) return
+                updateEditors()
+            }
+        }, project)
+
+        project.messageBus.connect(project).subscribe(FileEditorManagerListener.FILE_EDITOR_MANAGER, object : FileEditorManagerListener {
+            override fun selectionChanged(event: FileEditorManagerEvent) {
+                updateEditors()
+            }
+        })
+
         update()
+    }
+
+    private fun getSecondComponentToolTipText(): @Nls String? {
+        val secondComponent = goalsErrorsSplitter.secondComponent as? SingleHeightTabs ?: return null
+        return secondComponent?.getTabAt(0)?.tooltipText
+    }
+
+    private fun setErrorPanel() {
+        if (getSecondComponentToolTipText() == errorToolTipText) {
+            return
+        }
+        goalsErrorsSplitter.secondComponent = SingleHeightTabs(project, toolWindow.disposable).apply {
+            addTab(TabInfo(errorsPanel).apply {
+                setText(ArendBundle.message("arend.messages.view.error.title"))
+                setTooltipText(errorToolTipText)
+            })
+        }
+    }
+
+    private fun setInfoPanel() {
+        if (getSecondComponentToolTipText() == infoToolTipText) {
+            return
+        }
+        goalsErrorsSplitter.secondComponent = SingleHeightTabs(project, toolWindow.disposable).apply {
+            addTab(TabInfo(infoPanel).apply {
+                setText(ArendBundle.message("arend.messages.view.info.title"))
+                setTooltipText(infoToolTipText)
+            })
+        }
     }
 
     private fun setupTreeDetailsSplitter(vertical: Boolean) {
@@ -168,46 +225,93 @@ class ArendMessagesView(private val project: Project, toolWindow: ToolWindow) : 
 
     override fun valueChanged(e: TreeSelectionEvent?) = updateEditors()
 
+    private fun clearErrorData() {
+        if (!isGoal(getSelectedMessage())) {
+            tree.selectionModel.selectionPath = null
+        }
+        project.service<ArendMessagesService>().isErrorTextPinned = false
+    }
+
+    private fun updateCursor() {
+        val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return
+        val document = editor.document
+        val offset = editor.caretModel.offset
+        val file = PsiDocumentManager.getInstance(project).getPsiFile(document) as? ArendFile ?: run {
+            isCursorOnDocComment = false
+            return
+        }
+        val element = file.findElementAt(offset) ?: run {
+            isCursorOnDocComment = false
+            return
+        }
+        val docComment = element.ancestor<ArendDocComment>()
+        if (docComment != null) {
+            if (infoEditor == null) {
+                infoEditor = ArendInfoViewEditor(project)
+            }
+            infoEditor!!.updateHtml(Pair(docComment, null))
+            isCursorOnDocComment = true
+        } else {
+            isCursorOnDocComment = false
+        }
+    }
+
     fun updateEditors() {
-        val treeElement = getSelectedMessage()
-        if (treeElement != null) {
-            if (isGoal(treeElement) && !isGoalTextPinned()) {
-                if (goalEditor == null) {
-                    goalEditor = ArendMessagesViewEditor(project, treeElement, true)
+        updateCursor()
+        if (isCursorOnDocComment) {
+            if (isShowErrorsOrInfoPanel()) {
+                if (infoEditor == null) {
+                    infoEditor = ArendInfoViewEditor(project)
                 }
-                if (!isImplicitGoal(treeElement) || isShowImplicitGoals()) {
-                    updateEditor(goalEditor!!, treeElement)
-                } else {
-                    removeNotActionToolbars(goalEditor!!)
-                }
-                updateActionGroup(goalEditor!!)
-                updateGoalsView(goalEditor?.component ?: goalEmptyPanel)
-            }
-            if (isShowErrorsPanel() && !isErrorTextPinned() && (!isGoal(treeElement) || isShowGoalsInErrorsPanel())) {
-                if (errorEditor == null) {
-                    errorEditor = ArendMessagesViewEditor(project, treeElement, false)
-                }
-                updateEditor(errorEditor!!, treeElement)
-                updatePanel(errorsPanel, errorEditor?.component ?: errorEmptyPanel)
-            }
-            if (errorEditor?.isEmptyActionGroup() == true) {
-                errorEditor?.setupActions()
+                clearErrorData()
+                setInfoPanel()
+                updateActionGroup(infoEditor!!)
+                updatePanel(infoPanel, infoEditor?.component ?: infoEmptyPanel)
             }
         } else {
-            ApplicationManager.getApplication().executeOnPooledThread {
-                runReadAction {
-                    if (!isGoalTextPinned()) {
-                        val currentGoal = goalEditor?.treeElement?.sampleError
-                        if (currentGoal != null && isParentDefinitionPsiInvalid(currentGoal)) {
-                            goalEditor?.clear()
-                            updateGoalsView(goalEmptyPanel)
-                        }
+            val treeElement = getSelectedMessage()
+            if (treeElement != null) {
+                if (isGoal(treeElement) && !isGoalTextPinned()) {
+                    if (goalEditor == null) {
+                        goalEditor = ArendMessagesViewEditor(project, treeElement, EditorType.GOAL)
                     }
-                    if (isShowErrorsPanel() && !isErrorTextPinned()) {
-                        val currentError = errorEditor?.treeElement?.sampleError
-                        if (currentError != null && isParentDefinitionRemovedFromTree(currentError)) {
-                            errorEditor?.clear()
-                            updatePanel(errorsPanel, errorEmptyPanel)
+                    if (!isImplicitGoal(treeElement) || isShowImplicitGoals()) {
+                        updateEditor(goalEditor!!, treeElement)
+                    } else {
+                        removeNotActionToolbars(goalEditor!!)
+                    }
+                    updateActionGroup(goalEditor!!)
+                    updateGoalsView(goalEditor?.component ?: goalEmptyPanel)
+                }
+                if (isShowErrorsOrInfoPanel() && !isErrorTextPinned() && (!isGoal(treeElement) || isShowGoalsInErrorsPanel())) {
+                    if (errorEditor == null) {
+                        errorEditor = ArendMessagesViewEditor(project, treeElement, EditorType.ERROR)
+                    }
+                    setErrorPanel()
+                    updateActionGroup(errorEditor!!)
+                    updateEditor(errorEditor!!, treeElement)
+                    updatePanel(errorsPanel, errorEditor?.component ?: errorEmptyPanel)
+                }
+            } else {
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    runReadAction {
+                        if (!isGoalTextPinned()) {
+                            val currentGoal = goalEditor?.treeElement?.sampleError
+                            if (currentGoal != null && isParentDefinitionPsiInvalid(currentGoal)) {
+                                goalEditor?.clear()
+                                updateGoalsView(goalEmptyPanel)
+                            }
+                        }
+                        if (isShowErrorsOrInfoPanel() && !isErrorTextPinned()) {
+                            val currentError = errorEditor?.treeElement?.sampleError
+                            if (currentError != null && isParentDefinitionRemovedFromTree(currentError)) {
+                                errorEditor?.clear()
+                                updatePanel(errorsPanel, errorEmptyPanel)
+                            }
+                        }
+                        if (isShowErrorsOrInfoPanel() && getSecondComponentToolTipText() == infoToolTipText) {
+                            infoEditor?.clear()
+                            updatePanel(infoPanel, infoEmptyPanel)
                         }
                     }
                 }
@@ -232,7 +336,7 @@ class ArendMessagesView(private val project: Project, toolWindow: ToolWindow) : 
 
     private fun isErrorTextPinned() = project.service<ArendMessagesService>().isErrorTextPinned
 
-    private fun isShowErrorsPanel() = project.service<ArendMessagesService>().isShowErrorsPanel.get()
+    private fun isShowErrorsOrInfoPanel() = project.service<ArendMessagesService>().isShowErrorsOrInfoPanel.get()
 
     private fun isShowGoalsInErrorsPanel() = project.service<ArendMessagesService>().isShowGoalsInErrorsPanel.get()
 
@@ -308,7 +412,7 @@ class ArendMessagesView(private val project: Project, toolWindow: ToolWindow) : 
         }
     }
 
-    fun update(module: ModuleLocation? = null) {
+    fun update() {
         val server = project.service<ArendServerService>().server
         val filterSet = project.service<ArendProjectSettings>().messagesFilterSet
         val errorMap = server.errorMap
