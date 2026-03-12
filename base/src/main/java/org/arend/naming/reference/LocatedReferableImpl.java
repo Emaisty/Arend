@@ -14,7 +14,7 @@ public class LocatedReferableImpl implements TCDefReferable {
   private final String myName;
   private final Precedence myAliasPrecedence;
   private final String myAliasName;
-  private final LocatedReferable myParent;
+  private LocatedReferable myParent;
   private Kind myKind;
   private Definition myTypechecked;
 
@@ -74,6 +74,10 @@ public class LocatedReferableImpl implements TCDefReferable {
 
   public void setKind(Kind kind) {
     myKind = kind;
+  }
+
+  public void setParent(LocatedReferable parent) {
+    myParent = parent;
   }
 
   @Override

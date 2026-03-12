@@ -84,6 +84,7 @@ public class GroupData {
     if (newDef != null) {
       DefinitionData definitionData = myResolvedDefinitions != null ? myResolvedDefinitions.get(newDef.getData().getRefLongName()) : null;
       boolean ok = definitionData != null && newDef.getData().isSimilar(definitionData.definition().getData());
+      List<LocatedReferableImpl> reusedInternalRefs = new ArrayList<>();
       if (ok) {
         if (newDef instanceof Concrete.DataDefinition dataDef) {
           if (definitionData.definition() instanceof Concrete.DataDefinition oldData && dataDef.getConstructorClauses().size() == oldData.getConstructorClauses().size()) {
@@ -103,6 +104,7 @@ public class GroupData {
                   InternalReferable conRef = oldConstructor.getData();
                   conRef.setData(constructor.getData().getData());
                   constructor.setReferable(conRef);
+                  if (conRef instanceof LocatedReferableImpl lr) reusedInternalRefs.add(lr);
                 } else {
                   ok = false;
                 }
@@ -128,6 +130,7 @@ public class GroupData {
                     }
                     fieldRef.setData(field.getData().getData());
                     field.setReferable(fieldRef);
+                    reusedInternalRefs.add(fieldRef);
                   } else {
                     ok = false;
                   }
@@ -141,12 +144,17 @@ public class GroupData {
           }
         }
       }
+      if (!ok) {
+        for (LocatedReferableImpl child : reusedInternalRefs) child.setParent(newDef.getData());
+        if (parent != null && newDef.getData() instanceof LocatedReferableImpl locRef) locRef.setParent(parent);
+      }
 
       if (ok) {
         TCDefReferable ref = definitionData.definition().getData();
         replaced.put(newDef.getData(), ref);
         ref.setData(newDef.getData().getData());
         newDef.setReferable(ref);
+        if (parent != null && ref instanceof LocatedReferableImpl locRef) locRef.setParent(parent);
       }
     }
 
