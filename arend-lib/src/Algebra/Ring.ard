@@ -86,6 +86,12 @@
     | 0 => zro_*-right *> inv negative-right
     | suc n => pmap (_ *) (AddMonoid.BigSum_suc-nat {_} {n} {pow x}) *> ldistr *> pmap2 (+) geometric-partial-sum rdistr *> +-assoc *> pmap (_ +) (inv +-assoc *> pmap (_ +) negative_*-left *> pmap (`+ _) (pmap (_ +) ide-left *> negative-left) *> zro-left *> pmap negative pow-left)
 
+  \lemma geometric-like-partial-sum {k n : Nat} {x : E} :
+    (1 - x) * AddMonoid.BigSum (\new Array E n (\lam j => pow x (j Nat.+ k))) = pow x k - pow x (n Nat.+ k) =>
+    \let A0 : (\lam (j : Fin n) => pow x (j Nat.+ k)) = (\lam j => pow x j * pow x k) => ext (\lam j => Monoid.pow_+) \in
+      rewrite A0 (rewriteI (Semiring.BigSum-rdistr {\this} {\new Array E n (\lam j => pow x j)} {pow x k}, *-assoc)
+        (rewrite Ring.geometric-partial-sum (rewrite (rdistr, ide-left, PseudoRing.negative_*-left, inv Monoid.pow_+) idp)))
+
   \func IsNilpotent (x : E) => ∃ (n : Nat) (pow x n = 0)
 
   \lemma pow_-1_+2 {n : Nat} : pow -1 (n Nat.+ 2) = pow -1 n

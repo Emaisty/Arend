@@ -19,6 +19,7 @@
 \import Order.Biordered
 \import Order.LinearOrder
 \import Order.PartialOrder
+\import Order.StrictOrder
 \import Paths
 \import Paths.Meta
 \import Set
@@ -394,6 +395,8 @@
     | 0, l => inv zro-left
     | suc n, a :: l => pmap (a +) BigSum-split *> inv +-assoc
 
+  \lemma BigSum-head {k : Nat} (l : Array E (suc k)) : AddMonoid.BigSum l = l 0 + AddMonoid.BigSum (\new Array E k (\lam i => l (suc i))) => unfold AddMonoid.BigSum idp
+
   \lemma BigSum_suc {n : Nat} {l : Array E (suc n)} : BigSum l = BigSum (\new Array E n (\lam i => l i)) + l n \elim n, l
     | 0, :: a nil => simplify
     | suc n, :: a l => pmap (a +) (BigSum_suc {_} {n} {l} *> pmap (_ + (a :: l) __) (fin_nat-inj (pmap suc (mod_< id<suc) *> inv (mod_< id<suc)))) *> inv +-assoc
@@ -530,6 +533,20 @@
 
   \lemma BigSum_Perm {n : Nat} {l l' : Array E n} (p : Perm l l') : BigSum l = BigSum l'
     => BigSum_EPerm (EPerm.Perm_EPerm p)
+
+  \func BigSum-reverse {k : Nat} (l : Array E (suc k)) : AddMonoid.BigSum (\new Array E (suc k) (\lam i => l (k -' i))) = AddMonoid.BigSum l \elim k
+    | 0 => idp
+    | 1 => unfold AddMonoid.BigSum (repeat {2} (rewrite zro-right) +-comm)
+    | suc (suc k) =>
+      \let
+        | A0 : \Pi (i : Fin (suc k)) -> Fin.fromNat (suc k -' i) = {Fin (suc (suc (suc k)))} suc (Fin.fromNat {k} (k -' i)) =>
+          \lam i => fin_nat-inj (rewrite (mod_< {k -' i} {suc k} (<∘r -'<=id id<suc), mod_< {suc k -' i} {suc (suc (suc k))} (<∘r -'<=id (<∘ id<suc id<suc))) (-'_suc (<_suc_<= (fin_< i))))
+        | A1 : (\lam (i : Fin (suc k)) => l DArray.!! Fin.fromNat {suc (suc k)} (suc k -' i)) = (\lam (i : Fin (suc k)) => l DArray.!! suc (Fin.fromNat {k} (k -' i))) => ext (\lam _ => rewrite A0 idp)
+      \in
+        rewrite (AddMonoid.BigSum_suc, AddMonoid.BigSum_suc {_} {_} {l}) (
+          rewrite {1} (mod_< (id<suc {k Nat.+ 2})) (
+            rewrite (-'id, BigSum-head (\new Array E (suc (suc k)) (\lam i => l (suc (suc k) -' i))), A1, BigSum-reverse (\new Array E (suc k) (\lam i => l (suc i)))) equation.abMonoid
+          ))
 
   \sfunc FinSum {A : FinSet} (x : A -> E) : E
     => aux.1
